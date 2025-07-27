@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import Editor from '@monaco-editor/react';
+import Editor, { OnChange } from '@monaco-editor/react';
 import { Clock, Upload } from 'lucide-react';
 
 interface CodeEditorProps {
@@ -102,6 +102,11 @@ export default function CodeEditor({ onSubmit, contestId, userId, problemUrl, on
     if (langConf) setCode(langConf.defaultCode);
   };
 
+  // This is the function that handles the change event correctly.
+  const handleEditorChange: OnChange = (value) => {
+    setCode(value || ''); // If value is undefined, set it to an empty string.
+  };
+
   return (
     <div className="bg-vscode-editor border border-vscode-line rounded-lg overflow-hidden">
       <div className="bg-vscode-sidebar px-4 py-3 border-b border-vscode-line flex justify-between items-center">
@@ -137,7 +142,9 @@ export default function CodeEditor({ onSubmit, contestId, userId, problemUrl, on
           height="100%"
           language={language === 'cpp' ? 'cpp' : language}
           value={code}
-          onChange={setCode}
+          // --- FIX APPLIED HERE ---
+          // Instead of `onChange={setCode}`, we use our new handler function.
+          onChange={handleEditorChange}
           theme="vs-dark"
           options={{
             minimap: { enabled: false },
