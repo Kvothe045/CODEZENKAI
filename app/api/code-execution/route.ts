@@ -1,8 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { spawn } from 'child_process';
-import { writeFileSync, unlinkSync, mkdtempSync } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
 
 interface ExecutionRequest {
   code: string;
@@ -10,186 +6,195 @@ interface ExecutionRequest {
   input?: string;
 }
 
+interface Judge0Response {
+  stdout?: string;
+  stderr?: string;
+  compile_output?: string;
+  status: {
+    id: number;
+    description: string;
+  };
+  time?: string;
+  memory?: number;
+}
+
+// Judge0 Language IDs
+const LANGUAGE_IDS = {
+  cpp: 54,      // C++ (GCC 9.2.0)
+  python: 71,   // Python 3.8.1
+  java: 62,     // Java (OpenJDK 13.0.1)
+  c: 50,        // C (GCC 9.2.0)
+  javascript: 63, // JavaScript (Node.js 12.14.0)
+  go: 60,       // Go (1.13.5)
+  rust: 73,     // Rust (1.40.0)
+} as const;
+
+// Status codes from Judge0
+const STATUS_CODES = {
+  1: 'In Queue',
+  2: 'Processing',
+  3: 'Accepted',
+  4: 'Wrong Answer',
+  5: 'Time Limit Exceeded',
+  6: 'Compilation Error',
+  7: 'Runtime Error (SIGSEGV)',
+  8: 'Runtime Error (SIGXFSZ)',
+  9: 'Runtime Error (SIGFPE)',
+  10: 'Runtime Error (SIGABRT)',
+  11: 'Runtime Error (NZEC)',
+  12: 'Runtime Error (Other)',
+  13: 'Internal Error',
+  14: 'Exec Format Error'
+} as const;
+
+// Judge0 API configuration
+const JUDGE0_CONFIG = {
+  // Using the free public API - you can replace with your own Judge0 instance
+  baseUrl: process.env.JUDGE0_API_URL || 'https://judge0-ce.p.rapidapi.com',
+  apiKey: process.env.JUDGE0_API_KEY || '', // Get from RapidAPI
+  headers: {
+    'Content-Type': 'application/json',
+    'X-RapidAPI-Key': process.env.JUDGE0_API_KEY || '',
+    'X-RapidAPI-Host': 'judge0-ce.p.rapidapi.com'
+  }
+};
+
+class CodeExecutionService {
+  private async submitCode(code: string, languageId: number, input: string = ''): Promise<string> {
+    const submission = {
+      source_code: Buffer.from(code).toString('base64'),
+      language_id: languageId,
+      stdin: input ? Buffer.from(input).toString('base64') : undefined,
+      cpu_time_limit: 5, // 5 seconds
+      memory_limit: 128000, // 128 MB
+    };
+
+    const response = await fetch(`${JUDGE0_CONFIG.baseUrl}/submissions?base64_encoded=true&wait=true`, {
+      method: 'POST',
+      headers: JUDGE0_CONFIG.headers,
+      body: JSON.stringify(submission),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Judge0 API error: ${response.status} ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    return result.token;
+  }
+
+  private async getResult(token: string): Promise<Judge0Response> {
+    const response = await fetch(`${JUDGE0_CONFIG.baseUrl}/submissions/${token}?base64_encoded=true`, {
+      method: 'GET',
+      headers: JUDGE0_CONFIG.headers,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Judge0 API error: ${response.status} ${response.statusText}`);
+    }
+
+    return await response.json();
+  }
+
+  async executeCode(code: string, language: string, input: string = '') {
+    try {
+      const languageId = LANGUAGE_IDS[language as keyof typeof LANGUAGE_IDS];
+      if (!languageId) {
+        throw new Error(`Unsupported language: ${language}`);
+      }
+
+      // Submit code for execution
+      const token = await this.submitCode(code, languageId, input);
+      
+      // Get result (Judge0 with wait=true should return immediately when done)
+      const result = await this.getResult(token);
+
+      return this.formatResult(result);
+    } catch (error) {
+      return {
+        success: false,
+        error: `Execution failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        executionTime: 0
+      };
+    }
+  }
+
+  private formatResult(result: Judge0Response) {
+    const { status, stdout, stderr, compile_output, time } = result;
+    
+    // Decode base64 outputs
+    const output = stdout ? Buffer.from(stdout, 'base64').toString() : '';
+    const errorOutput = stderr ? Buffer.from(stderr, 'base64').toString() : '';
+    const compileError = compile_output ? Buffer.from(compile_output, 'base64').toString() : '';
+
+    // Check if compilation failed
+    if (status.id === 6) {
+      return {
+        success: false,
+        error: `Compilation Error:\n${compileError}`,
+        executionTime: 0
+      };
+    }
+
+    // Check for runtime errors
+    if (status.id >= 7 && status.id <= 12) {
+      return {
+        success: false,
+        error: `Runtime Error (${STATUS_CODES[status.id as keyof typeof STATUS_CODES]}):\n${errorOutput}`,
+        executionTime: parseFloat(time || '0') * 1000 // Convert to milliseconds
+      };
+    }
+
+    // Check for other errors
+    if (status.id === 5) {
+      return {
+        success: false,
+        error: 'Time Limit Exceeded (5 seconds)',
+        executionTime: 5000
+      };
+    }
+
+    if (status.id === 13 || status.id === 14) {
+      return {
+        success: false,
+        error: `System Error: ${STATUS_CODES[status.id as keyof typeof STATUS_CODES]}`,
+        executionTime: 0
+      };
+    }
+
+    // Success case
+    return {
+      success: true,
+      output: output || '(no output)',
+      executionTime: Math.round(parseFloat(time || '0') * 1000) // Convert to milliseconds
+    };
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { code, language, input = '' }: ExecutionRequest = await request.json();
 
     if (!code || !language) {
-      return NextResponse.json({ 
-        success: false, 
-        error: 'Code and language are required' 
-      }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: 'Code and language are required' },
+        { status: 400 }
+      );
     }
 
-    const result = await executeCode(code, language, input);
+    const executionService = new CodeExecutionService();
+    const result = await executionService.executeCode(code, language, input);
+
     return NextResponse.json(result);
 
   } catch (error) {
     console.error('Code execution error:', error);
-    return NextResponse.json({
-      success: false,
-      error: 'Internal server error'
-    }, { status: 500 });
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Internal server error during code execution'
+      },
+      { status: 500 }
+    );
   }
-}
-
-async function executeCode(code: string, language: string, input: string) {
-  const tempDir = mkdtempSync(join(tmpdir(), 'codezenkai-'));
-  const startTime = Date.now();
-
-  try {
-    let fileName: string;
-    let compileCommands: string[];
-    let executeCommands: string[];
-
-    switch (language) {
-      case 'cpp':
-        fileName = join(tempDir, 'solution.cpp');
-        writeFileSync(fileName, code);
-        compileCommands = ['g++', '-o', join(tempDir, 'solution'), fileName, '-std=c++17'];
-        executeCommands = [join(tempDir, 'solution')];
-        break;
-
-      case 'python':
-        fileName = join(tempDir, 'solution.py');
-        writeFileSync(fileName, code);
-        compileCommands = [];
-        executeCommands = ['python3', fileName];
-        break;
-
-      case 'java':
-        fileName = join(tempDir, 'Solution.java');
-        writeFileSync(fileName, code);
-        compileCommands = ['javac', fileName];
-        executeCommands = ['java', '-cp', tempDir, 'Solution'];
-        break;
-
-      default:
-        return {
-          success: false,
-          error: 'Unsupported language'
-        };
-    }
-
-    // Compile if needed
-    if (compileCommands.length > 0) {
-      const compileResult = await executeCommand(compileCommands, '', 10000);
-      if (!compileResult.success) {
-        return {
-          success: false,
-          error: `Compilation Error:\n${compileResult.stderr}`
-        };
-      }
-    }
-
-    // Execute
-    const executeResult = await executeCommand(executeCommands, input, 5000);
-    const executionTime = Date.now() - startTime;
-
-    if (executeResult.success) {
-      return {
-        success: true,
-        output: executeResult.stdout,
-        executionTime
-      };
-    } else {
-      return {
-        success: false,
-        error: `Runtime Error:\n${executeResult.stderr}`,
-        executionTime
-      };
-    }
-
-  } catch (error) {
-    return {
-      success: false,
-      error: `Execution failed: ${error}`
-    };
-  } finally {
-    // Cleanup temp files
-    try {
-      const filesToClean = [
-        join(tempDir, 'solution.cpp'),
-        join(tempDir, 'solution.py'),
-        join(tempDir, 'Solution.java'),
-        join(tempDir, 'Solution.class'),
-        join(tempDir, 'solution')
-      ];
-      
-      filesToClean.forEach(file => {
-        try {
-          unlinkSync(file);
-        } catch (e) {
-          // Ignore individual file cleanup errors
-        }
-      });
-      
-      // Try to remove the temp directory
-      try {
-        const fs = require('fs');
-        fs.rmdirSync(tempDir);
-      } catch (e) {
-        // Ignore directory cleanup errors
-      }
-    } catch (e) {
-      // Ignore cleanup errors
-    }
-  }
-}
-
-function executeCommand(commands: string[], input: string, timeout: number): Promise<{
-  success: boolean;
-  stdout: string;
-  stderr: string;
-}> {
-  return new Promise((resolve) => {
-    const process = spawn(commands[0], commands.slice(1), {
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-
-    let stdout = '';
-    let stderr = '';
-
-    process.stdout?.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    process.stderr?.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    // Send input to the process
-    if (input) {
-      process.stdin?.write(input);
-    }
-    process.stdin?.end();
-
-    // Set timeout
-    const timer = setTimeout(() => {
-      process.kill('SIGKILL');
-      resolve({
-        success: false,
-        stdout,
-        stderr: stderr + '\nExecution timed out'
-      });
-    }, timeout);
-
-    process.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({
-        success: code === 0,
-        stdout,
-        stderr
-      });
-    });
-
-    process.on('error', (error) => {
-      clearTimeout(timer);
-      resolve({
-        success: false,
-        stdout,
-        stderr: error.message
-      });
-    });
-  });
 }
