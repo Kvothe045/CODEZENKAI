@@ -1,17 +1,15 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
-import { 
-  Play, Folder, Check, AlertCircle, Settings, Terminal, Copy, CheckCircle, 
-  Download, Code, Zap, ChevronLeft, ChevronRight, Eye, EyeOff 
-} from 'lucide-react';
+import { Play, Folder, Check, AlertCircle, Settings, Terminal, Copy, CheckCircle, Download, Code, Zap, ChevronDown, ChevronUp, Maximize2 } from 'lucide-react';
 
 interface Props {
   problemUrl?: string;
   contestId: string;
   userId?: string;
-  isFullscreen?: boolean;
+  layoutMode: 'split' | 'code-focus' | 'fullscreen';
+  showProblemViewer: boolean;
 }
 
 interface ExecutionResult {
@@ -47,102 +45,7 @@ const getBrowserCapabilities = () => {
   };
 };
 
-interface ResizablePanelProps {
-  children: React.ReactNode;
-  initialWidth?: number;
-  minWidth?: number;
-  maxWidth?: number;
-  onResize?: (width: number) => void;
-  isCollapsed?: boolean;
-  position: 'left' | 'right';
-  className?: string;
-}
-
-const ResizablePanel: React.FC<ResizablePanelProps> = ({
-  children,
-  initialWidth = 300,
-  minWidth = 200,
-  maxWidth = 600,
-  onResize,
-  isCollapsed = false,
-  position,
-  className = ''
-}) => {
-  const [width, setWidth] = useState(initialWidth);
-  const [isResizing, setIsResizing] = useState(false);
-  const panelRef = useRef<HTMLDivElement>(null);
-
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-  }, []);
-
-  const handleMouseMove = useCallback((e: MouseEvent) => {
-    if (!isResizing || !panelRef.current) return;
-
-    const rect = panelRef.current.getBoundingClientRect();
-    let newWidth: number;
-
-    if (position === 'left') {
-      newWidth = e.clientX - rect.left;
-    } else {
-      newWidth = rect.right - e.clientX;
-    }
-
-    newWidth = Math.max(minWidth, Math.min(maxWidth, newWidth));
-    setWidth(newWidth);
-    onResize?.(newWidth);
-  }, [isResizing, minWidth, maxWidth, onResize, position]);
-
-  const handleMouseUp = useCallback(() => {
-    setIsResizing(false);
-  }, []);
-
-  useEffect(() => {
-    if (isResizing) {
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = 'col-resize';
-      document.body.style.userSelect = 'none';
-
-      return () => {
-        document.removeEventListener('mousemove', handleMouseMove);
-        document.removeEventListener('mouseup', handleMouseUp);
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-      };
-    }
-  }, [isResizing, handleMouseMove, handleMouseUp]);
-
-  if (isCollapsed) {
-    return null;
-  }
-
-  return (
-    <div
-      ref={panelRef}
-      className={`relative ${className}`}
-      style={{ width: `${width}px`, flexShrink: 0 }}
-    >
-      {children}
-      
-      {/* Resize Handle */}
-      <div
-        className={`absolute top-0 bottom-0 w-1 bg-transparent hover:bg-vscode-blue cursor-col-resize group z-10 ${
-          position === 'left' ? 'right-0' : 'left-0'
-        }`}
-        onMouseDown={handleMouseDown}
-      >
-        <div className="absolute inset-0 w-1 bg-vscode-line opacity-0 group-hover:opacity-100 transition-opacity" />
-        {isResizing && (
-          <div className="absolute inset-0 w-1 bg-vscode-blue" />
-        )}
-      </div>
-    </div>
-  );
-};
-
-export default function CodeEditor({ problemUrl, contestId, userId, isFullscreen = false }: Props) {
+export default function CodeEditor({ problemUrl, contestId, userId, layoutMode, showProblemViewer }: Props) {
   const [code, setCode] = useState('');
   const [language, setLanguage] = useState('cpp');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -154,21 +57,14 @@ export default function CodeEditor({ problemUrl, contestId, userId, isFullscreen
   const [isEditorReady, setIsEditorReady] = useState(false);
   const [copiedOutput, setCopiedOutput] = useState(false);
   const [browserInfo] = useState(getBrowserCapabilities());
-  const [showExecutionPanel, setShowExecutionPanel] = useState(true);
-  const [executionPanelWidth, setExecutionPanelWidth] = useState(350);
+  const [executionPanelHeight, setExecutionPanelHeight] = useState(300); // Fixed height in pixels
+  const [isExecutionPanelExpanded, setIsExecutionPanelExpanded] = useState(false);
   const fileHandleRef = useRef<any>(null);
 
-  // Enhanced language templates with more comprehensive starter code
+  // Enhanced language templates
   const languageTemplates = {
-    cpp: `#include <iostream>
-#include <vector>
-#include <algorithm>
-#include <string>
-#include <map>
-#include <set>
-#include <queue>
-#include <stack>
-#include <cmath>
+    cpp: `#include <bits/stdc++.h>
+
 using namespace std;
 
 int main() {
@@ -292,18 +188,14 @@ fn main() {
     if (savedLocation && savedMethod) {
       setSaveLocation(savedLocation);
     }
-
-    // Restore panel preferences
-    const savedPanelWidth = localStorage.getItem('codezenkai_execution_panel_width');
-    const savedPanelVisibility = localStorage.getItem('codezenkai_execution_panel_visible');
-    
-    if (savedPanelWidth) {
-      setExecutionPanelWidth(parseInt(savedPanelWidth));
-    }
-    if (savedPanelVisibility !== null) {
-      setShowExecutionPanel(JSON.parse(savedPanelVisibility));
-    }
   }, [browserInfo.supportsFileSystemAccess]);
+
+  // Auto-expand execution panel when running code
+  useEffect(() => {
+    if (isExecuting || executionResult) {
+      setIsExecutionPanelExpanded(true);
+    }
+  }, [isExecuting, executionResult]);
 
   const executeCode = async () => {
     if (!code.trim()) {
@@ -311,14 +203,9 @@ fn main() {
       return;
     }
 
-    // Show execution panel if hidden
-    if (!showExecutionPanel) {
-      setShowExecutionPanel(true);
-      localStorage.setItem('codezenkai_execution_panel_visible', 'true');
-    }
-
     setIsExecuting(true);
     setExecutionResult(null);
+    setIsExecutionPanelExpanded(true); // Expand panel when executing
 
     try {
       const response = await fetch('/api/code-execution', {
@@ -341,17 +228,6 @@ fn main() {
     } finally {
       setIsExecuting(false);
     }
-  };
-
-  const toggleExecutionPanel = () => {
-    const newVisibility = !showExecutionPanel;
-    setShowExecutionPanel(newVisibility);
-    localStorage.setItem('codezenkai_execution_panel_visible', JSON.stringify(newVisibility));
-  };
-
-  const handleExecutionPanelResize = (width: number) => {
-    setExecutionPanelWidth(width);
-    localStorage.setItem('codezenkai_execution_panel_width', width.toString());
   };
 
   const getProblemIdFromUrl = (url?: string): string => {
@@ -484,163 +360,80 @@ fn main() {
     }
   };
 
-  return (
-    <div className="h-full bg-vscode-editor flex">
-      {/* Code Editor - Main Area */}
-      <div className="flex-1 flex flex-col border-r border-vscode-line min-w-0">
-        {/* Toolbar */}
-        <div className="bg-vscode-sidebar border-b border-vscode-line px-4 py-3 flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center space-x-4 min-w-0 flex-1">
-            <div className="flex items-center space-x-2">
-              <Code className="h-4 w-4 text-vscode-blue flex-shrink-0" />
-              <span className="text-vscode-text text-sm font-medium">Language:</span>
-              <select
-                value={language}
-                onChange={(e) => setLanguage(e.target.value)}
-                className="bg-vscode-editor border border-vscode-line rounded px-3 py-2 text-vscode-text focus:outline-none focus:border-vscode-blue min-w-32"
-              >
-                {Object.entries(languageInfo).map(([key, info]) => (
-                  <option key={key} value={key}>{info.name}</option>
-                ))}
-              </select>
-            </div>
+  const toggleExecutionPanel = () => {
+    setIsExecutionPanelExpanded(!isExecutionPanelExpanded);
+  };
 
-            <div className="flex items-center space-x-2 min-w-0">
-              {!saveLocation ? (
-                <button
-                  onClick={handleSelectLocation}
-                  className="flex items-center space-x-2 bg-vscode-yellow text-black px-3 py-2 rounded text-sm hover:bg-yellow-400 transition-colors font-medium flex-shrink-0"
-                >
-                  {browserInfo.supportsFileSystemAccess ? <Folder className="h-4 w-4" /> : <Download className="h-4 w-4" />}
-                  <span className="hidden sm:inline">Select Save Location</span>
-                  <span className="sm:hidden">Save</span>
-                </button>
-              ) : (
-                <div className="flex items-center space-x-2 min-w-0">
-                  <button
-                    onClick={handleSelectLocation}
-                    className="flex items-center space-x-2 bg-vscode-line text-vscode-text px-3 py-2 rounded text-sm hover:bg-vscode-comment transition-colors flex-shrink-0"
-                  >
-                    <Settings className="h-4 w-4" />
-                    <span className="hidden sm:inline">Change</span>
-                  </button>
-                  <div className="flex items-center space-x-2 bg-vscode-bg rounded px-3 py-2 border border-vscode-line min-w-0">
-                    <Check className="h-3 w-3 text-vscode-green flex-shrink-0" />
-                    <span className="text-xs text-vscode-comment truncate max-w-32" title={saveLocation}>
-                      {saveLocation}
-                    </span>
-                    <button
-                      onClick={clearSavedLocation}
-                      className="text-vscode-red hover:text-red-400 text-xs ml-1 flex-shrink-0"
-                      title="Clear saved location"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
+  // Dynamic layout based on mode and execution panel state
+  const getLayoutConfig = () => {
+    if (layoutMode === 'fullscreen') {
+      return {
+        editorWidth: isExecutionPanelExpanded ? 'w-3/4' : 'w-4/5',
+        executionWidth: isExecutionPanelExpanded ? 'w-1/4' : 'w-1/5',
+        showMinimap: true,
+      };
+    } else {
+      return {
+        editorWidth: isExecutionPanelExpanded ? 'w-2/3' : 'w-3/4',
+        executionWidth: isExecutionPanelExpanded ? 'w-1/3' : 'w-1/4',
+        showMinimap: layoutMode === 'code-focus',
+      };
+    }
+  };
+
+  const layout = getLayoutConfig();
+
+  return (
+    <div className="h-full bg-vscode-editor flex flex-col">
+      {/* Toolbar - Fixed at top */}
+      <div className="bg-vscode-sidebar border-b border-vscode-line px-4 py-3 flex items-center justify-between flex-shrink-0">
+        <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2">
+            <Code className="h-4 w-4 text-vscode-blue" />
+            <span className="text-vscode-text text-sm font-medium">Language:</span>
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              className="bg-vscode-editor border border-vscode-line rounded px-3 py-2 text-vscode-text focus:outline-none focus:border-vscode-blue min-w-32"
+            >
+              {Object.entries(languageInfo).map(([key, info]) => (
+                <option key={key} value={key}>{info.name}</option>
+              ))}
+            </select>
           </div>
 
           <div className="flex items-center space-x-2">
-            {/* Execution Panel Toggle */}
-            <button
-              onClick={toggleExecutionPanel}
-              className="flex items-center space-x-2 bg-vscode-line text-vscode-text px-3 py-2 rounded text-sm hover:bg-vscode-comment transition-colors"
-              title={showExecutionPanel ? 'Hide execution panel' : 'Show execution panel'}
-            >
-              {showExecutionPanel ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              <span className="hidden md:inline">
-                {showExecutionPanel ? 'Hide Panel' : 'Show Panel'}
-              </span>
-            </button>
-
-            {/* Judge0 Powered Badge */}
-            <div className="flex items-center space-x-2 text-xs text-vscode-comment">
-              <Zap className="h-3 w-3 text-vscode-yellow" />
-              <span className="hidden lg:inline">Powered by Judge0</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Browser Compatibility Info */}
-        {showLocationPrompt && (
-          <div className="bg-vscode-blue/10 border-b border-vscode-blue/20 px-4 py-3 flex-shrink-0">
-            <div className="flex items-center justify-between">
-              <div className="flex items-start space-x-2 text-vscode-text text-sm">
-                <AlertCircle className="h-4 w-4 text-vscode-blue mt-0.5 flex-shrink-0" />
-                <div>
-                  <div className="font-medium mb-1">Choose your preferred save method:</div>
-                  <div className="text-vscode-comment">
-                    {browserInfo.supportsFileSystemAccess ? (
-                      <>• {browserInfo.browser} supports folder selection for custom save locations</>
-                    ) : (
-                      <>• {browserInfo.browser} will save files to your default Downloads folder</>
-                    )}
-                  </div>
+            {!saveLocation ? (
+              <button
+                onClick={handleSelectLocation}
+                className="flex items-center space-x-2 bg-vscode-yellow text-black px-3 py-2 rounded text-sm hover:bg-yellow-400 transition-colors font-medium"
+              >
+                {browserInfo.supportsFileSystemAccess ? <Folder className="h-4 w-4" /> : <Download className="h-4 w-4" />}
+                <span className="hidden sm:inline">Select Save Location</span>
+                <span className="sm:hidden">Save</span>
+              </button>
+            ) : (
+              <div className="flex items-center space-x-2">
+                <div className="flex items-center space-x-2 bg-vscode-bg rounded px-3 py-2 border border-vscode-line">
+                  <Check className="h-3 w-3 text-vscode-green flex-shrink-0" />
+                  <span className="text-xs text-vscode-comment max-w-24 truncate" title={saveLocation}>
+                    {saveLocation}
+                  </span>
+                  <button
+                    onClick={clearSavedLocation}
+                    className="text-vscode-red hover:text-red-400 text-xs ml-1"
+                    title="Clear saved location"
+                  >
+                    ✕
+                  </button>
                 </div>
               </div>
-              <button
-                onClick={() => setShowLocationPrompt(false)}
-                className="text-vscode-comment hover:text-vscode-text"
-              >
-                ✕
-              </button>
-            </div>
+            )}
           </div>
-        )}
-
-        {/* Code Editor */}
-        <div className="flex-1 relative min-h-0">
-          {!isEditorReady && (
-            <div className="absolute inset-0 flex items-center justify-center bg-vscode-editor z-10">
-              <div className="text-center">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-vscode-blue mx-auto mb-2"></div>
-                <div className="text-vscode-comment">Loading editor...</div>
-              </div>
-            </div>
-          )}
-          <Editor
-            height="100%"
-            language={languageInfo[language as keyof typeof languageInfo].monaco}
-            value={code}
-            onChange={(value: string | undefined) => setCode(value || '')}
-            onMount={() => setIsEditorReady(true)}
-            theme="vs-dark"
-            options={{
-              minimap: { enabled: isFullscreen },
-              fontSize: 14,
-              wordWrap: 'on',
-              automaticLayout: true,
-              scrollBeyondLastLine: false,
-              contextmenu: true,
-              lineNumbers: 'on',
-              rulers: [80],
-              folding: true,
-              foldingStrategy: 'indentation',
-              showFoldingControls: 'always',
-              bracketPairColorization: { enabled: true },
-              autoIndent: 'full',
-              formatOnPaste: true,
-              formatOnType: true,
-              tabSize: 2,
-              insertSpaces: true,
-              renderWhitespace: 'selection',
-              scrollbar: {
-                vertical: 'auto',
-                horizontal: 'auto',
-                verticalScrollbarSize: 12,
-                horizontalScrollbarSize: 12,
-                useShadows: false,
-              },
-              overviewRulerBorder: false,
-              hideCursorInOverviewRuler: true,
-            }}
-          />
         </div>
 
-        {/* Quick Action Bar */}
-        <div className="bg-vscode-sidebar border-t border-vscode-line px-4 py-2 flex items-center justify-center space-x-3">
+        {/* Action Buttons */}
+        <div className="flex items-center space-x-3">
           <button
             onClick={executeCode}
             disabled={isExecuting}
@@ -649,12 +442,14 @@ fn main() {
             {isExecuting ? (
               <>
                 <div className="animate-spin rounded-full h-4 w-4 border-2 border-black border-t-transparent"></div>
-                <span>Running...</span>
+                <span className="hidden sm:inline">Running...</span>
+                <span className="sm:hidden">...</span>
               </>
             ) : (
               <>
                 <Terminal className="h-4 w-4" />
-                <span>Run Code</span>
+                <span className="hidden sm:inline">Run Code</span>
+                <span className="sm:hidden">Run</span>
               </>
             )}
           </button>
@@ -667,130 +462,205 @@ fn main() {
             {isSubmitting ? (
               <>
                 <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
-                <span>Submitting...</span>
+                <span className="hidden sm:inline">Submitting...</span>
+                <span className="sm:hidden">...</span>
               </>
             ) : (
               <>
                 <Play className="h-4 w-4" />
-                <span>Submit & Save</span>
+                <span className="hidden sm:inline">Save & Submit</span>
+                <span className="sm:hidden">Submit</span>
               </>
             )}
           </button>
+
+          {/* Judge0 Badge */}
+          {/* <div className="hidden lg:flex items-center space-x-2 text-xs text-vscode-comment">
+            <Zap className="h-3 w-3 text-vscode-yellow" />
+            <span>Judge0</span>
+          </div> */}
         </div>
       </div>
 
-      {/* Resizable Execution Panel - Right Side */}
-      {showExecutionPanel && (
-        <ResizablePanel
-          initialWidth={executionPanelWidth}
-          minWidth={280}
-          maxWidth={600}
-          onResize={handleExecutionPanelResize}
-          position="right"
-          className="bg-vscode-sidebar flex flex-col"
-        >
-          {/* Panel Header */}
-          <div className="p-4 border-b border-vscode-line bg-vscode-bg">
+      {/* Browser compatibility prompt */}
+      {showLocationPrompt && (
+        <div className="bg-vscode-blue/10 border-b border-vscode-blue/20 px-4 py-3 flex-shrink-0">
+          <div className="flex items-center justify-between">
+            <div className="flex items-start space-x-2 text-vscode-text text-sm">
+              <AlertCircle className="h-4 w-4 text-vscode-blue mt-0.5 flex-shrink-0" />
+              <div>
+                <div className="font-medium mb-1">Choose your preferred save method:</div>
+                <div className="text-vscode-comment">
+                  {browserInfo.supportsFileSystemAccess ? (
+                    <>• {browserInfo.browser} supports folder selection for custom save locations</>
+                  ) : (
+                    <>• {browserInfo.browser} will save files to your default Downloads folder</>
+                  )}
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowLocationPrompt(false)}
+              className="text-vscode-comment hover:text-vscode-text"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Main Editor and Execution Area */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Code Editor - Maintains consistent width */}
+        <div className={`${layout.editorWidth} transition-all duration-300 ease-in-out flex flex-col border-r border-vscode-line`}>
+          <div className="flex-1 relative">
+            {!isEditorReady && (
+              <div className="absolute inset-0 flex items-center justify-center bg-vscode-editor z-10">
+                <div className="text-center">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-vscode-blue mx-auto mb-2"></div>
+                  <div className="text-vscode-comment">Loading editor...</div>
+                </div>
+              </div>
+            )}
+            <Editor
+              height="100%"
+              language={languageInfo[language as keyof typeof languageInfo].monaco}
+              value={code}
+              onChange={(value: string | undefined) => setCode(value || '')}
+              onMount={() => setIsEditorReady(true)}
+              theme="vs-dark"
+              options={{
+                minimap: { enabled: layout.showMinimap },
+                fontSize: 14,
+                wordWrap: 'on',
+                automaticLayout: true,
+                scrollBeyondLastLine: false,
+                contextmenu: true,
+                lineNumbers: 'on',
+                rulers: [80],
+                folding: true,
+                foldingStrategy: 'indentation',
+                showFoldingControls: 'always',
+                bracketPairColorization: { enabled: true },
+                autoIndent: 'full',
+                formatOnPaste: true,
+                formatOnType: true,
+                tabSize: 2,
+                insertSpaces: true,
+                renderWhitespace: 'selection',
+                scrollbar: {
+                  vertical: 'auto',
+                  horizontal: 'auto',
+                  verticalScrollbarSize: 12,
+                  horizontalScrollbarSize: 12,
+                  useShadows: false,
+                },
+                overviewRulerBorder: false,
+                hideCursorInOverviewRuler: true,
+              }}
+            />
+          </div>
+        </div>
+
+        {/* Execution Panel - Smart Layout */}
+        <div className={`${layout.executionWidth} transition-all duration-300 ease-in-out bg-vscode-sidebar flex flex-col`}>
+          {/* Collapsible Header */}
+          <div className="flex-shrink-0 p-4 border-b border-vscode-line bg-vscode-bg">
             <div className="flex items-center justify-between">
               <h3 className="font-semibold text-vscode-text flex items-center">
                 <Terminal className="h-4 w-4 mr-2" />
-                Code Execution
+                <span className="hidden sm:inline">Code Execution</span>
+                <span className="sm:hidden">Execute</span>
               </h3>
               <button
                 onClick={toggleExecutionPanel}
-                className="text-vscode-comment hover:text-vscode-text p-1 rounded hover:bg-vscode-line"
-                title="Hide execution panel"
+                className="text-vscode-comment hover:text-vscode-text p-1 rounded hover:bg-vscode-line transition-colors"
+                title={isExecutionPanelExpanded ? 'Collapse Panel' : 'Expand Panel'}
               >
-                <ChevronRight className="h-4 w-4" />
+                {isExecutionPanelExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
               </button>
             </div>
           </div>
 
-          {/* Input Section */}
-          <div className="p-4 border-b border-vscode-line">
-            <label className="block text-sm font-medium text-vscode-text mb-2">
-              Custom Input:
-            </label>
-            <textarea
-              value={customInput}
-              onChange={(e) => setCustomInput(e.target.value)}
-              placeholder="Enter input for your program..."
-              className="w-full h-20 bg-vscode-editor border border-vscode-line rounded px-3 py-2 text-vscode-text text-sm focus:outline-none focus:border-vscode-blue resize-none font-mono"
-            />
-          </div>
-
-          {/* Output Section */}
-          <div className="flex-1 p-4 overflow-y-auto min-h-0">
-            <div className="flex items-center justify-between mb-2">
-              <label className="block text-sm font-medium text-vscode-text">
-                Output:
+          {/* Expandable Content */}
+          <div className={`flex-1 flex flex-col transition-all duration-300 ease-in-out ${
+            isExecutionPanelExpanded ? 'opacity-100' : 'opacity-60'
+          }`}>
+            {/* Input Section */}
+            <div className="flex-shrink-0 p-4 border-b border-vscode-line">
+              <label className="block text-sm font-medium text-vscode-text mb-2">
+                {isExecutionPanelExpanded ? 'Custom Input:' : 'Input:'}
               </label>
-              {executionResult?.output && (
-                <button
-                  onClick={copyOutputToClipboard}
-                  className="flex items-center space-x-1 text-vscode-comment hover:text-vscode-text p-1 rounded hover:bg-vscode-line"
-                  title="Copy output"
-                >
-                  {copiedOutput ? (
-                    <CheckCircle className="h-3 w-3 text-vscode-green" />
-                  ) : (
-                    <Copy className="h-3 w-3" />
-                  )}
-                </button>
-              )}
+              <textarea
+                value={customInput}
+                onChange={(e) => setCustomInput(e.target.value)}
+                placeholder="Enter input for your program..."
+                className={`w-full bg-vscode-editor border border-vscode-line rounded px-3 py-2 text-vscode-text text-sm focus:outline-none focus:border-vscode-blue resize-none font-mono transition-all duration-300 ${
+                  isExecutionPanelExpanded ? 'h-24' : 'h-16'
+                }`}
+              />
             </div>
-            
-            {isExecuting ? (
-              <div className="bg-vscode-editor border border-vscode-line rounded p-4 text-sm">
-                <div className="flex items-center space-x-2 text-vscode-yellow">
-                  <div className="animate-spin rounded-full h-4 w-4 border-2 border-vscode-yellow border-t-transparent"></div>
-                  <span>Executing code...</span>
-                </div>
-              </div>
-            ) : executionResult ? (
-              <div className="space-y-3">
-                {executionResult.success ? (
-                  <div className="bg-vscode-editor border border-vscode-line rounded p-4">
-                    <pre className="text-sm text-vscode-text whitespace-pre-wrap font-mono leading-relaxed">
-                      {executionResult.output || '(no output)'}
-                    </pre>
-                    {executionResult.executionTime !== undefined && (
-                      <div className="mt-3 pt-3 border-t border-vscode-line text-xs text-vscode-comment flex items-center space-x-2">
-                        <CheckCircle className="h-3 w-3 text-vscode-green" />
-                        <span>Execution time: {executionResult.executionTime}ms</span>
-                      </div>
+
+            {/* Output Section */}
+            <div className="flex-1 p-4 overflow-y-auto">
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-sm font-medium text-vscode-text">
+                  Output:
+                </label>
+                {executionResult?.output && (
+                  <button
+                    onClick={copyOutputToClipboard}
+                    className="flex items-center space-x-1 text-vscode-comment hover:text-vscode-text p-1 rounded hover:bg-vscode-line"
+                    title="Copy output"
+                  >
+                    {copiedOutput ? (
+                      <CheckCircle className="h-3 w-3 text-vscode-green" />
+                    ) : (
+                      <Copy className="h-3 w-3" />
                     )}
-                  </div>
-                ) : (
-                  <div className="bg-vscode-red/10 border border-vscode-red rounded p-4">
-                    <pre className="text-sm text-vscode-red whitespace-pre-wrap font-mono leading-relaxed">
-                      {executionResult.error || 'Unknown error occurred'}
-                    </pre>
-                  </div>
+                  </button>
                 )}
               </div>
-            ) : (
-              <div className="bg-vscode-editor border border-vscode-line rounded p-4 text-sm text-vscode-comment text-center">
-                <div className="mb-2">💻</div>
-                <div>Click "Run Code" to execute your program</div>
-              </div>
-            )}
+              
+              {isExecuting ? (
+                <div className="bg-vscode-editor border border-vscode-line rounded p-4 text-sm">
+                  <div className="flex items-center space-x-2 text-vscode-yellow">
+                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-vscode-yellow border-t-transparent"></div>
+                    <span>Executing code...</span>
+                  </div>
+                </div>
+              ) : executionResult ? (
+                <div className="space-y-3">
+                  {executionResult.success ? (
+                    <div className="bg-vscode-editor border border-vscode-line rounded p-4">
+                      <pre className="text-sm text-vscode-text whitespace-pre-wrap font-mono leading-relaxed overflow-y-auto max-h-48">
+                        {executionResult.output || '(no output)'}
+                      </pre>
+                      {executionResult.executionTime !== undefined && (
+                        <div className="mt-3 pt-3 border-t border-vscode-line text-xs text-vscode-comment flex items-center space-x-2">
+                          <CheckCircle className="h-3 w-3 text-vscode-green" />
+                          <span>Time: {executionResult.executionTime}ms</span>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="bg-vscode-red/10 border border-vscode-red rounded p-4">
+                      <pre className="text-sm text-vscode-red whitespace-pre-wrap font-mono leading-relaxed overflow-y-auto max-h-48">
+                        {executionResult.error || 'Unknown error occurred'}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="bg-vscode-editor border border-vscode-line rounded p-4 text-sm text-vscode-comment text-center">
+                  <div className="mb-2">💻</div>
+                  <div>{isExecutionPanelExpanded ? 'Click "Run Code" to execute your program' : 'Run code to see output'}</div>
+                </div>
+              )}
+            </div>
           </div>
-        </ResizablePanel>
-      )}
-
-      {/* Collapsed Panel Indicator */}
-      {!showExecutionPanel && (
-        <div className="w-8 bg-vscode-sidebar border-l border-vscode-line flex flex-col items-center justify-center">
-          <button
-            onClick={toggleExecutionPanel}
-            className="p-2 text-vscode-comment hover:text-vscode-text hover:bg-vscode-line rounded transition-colors"
-            title="Show execution panel"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </button>
         </div>
-      )}
+      </div>
     </div>
   );
 }

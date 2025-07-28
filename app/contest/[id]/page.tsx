@@ -8,7 +8,7 @@ import ProblemNavigator from '@/components/contest/ProblemNavigator';
 import ProblemViewer from '@/components/contest/ProblemViewer';
 import CodeEditor from '@/components/contest/CodeEditor';
 import { Contest } from '@/lib/database';
-import { Maximize2, Minimize2 } from 'lucide-react';
+import { Maximize2, Minimize2, EyeOff, Eye, Layout, Code2, Monitor } from 'lucide-react';
 
 interface Problem {
   contestId: string;
@@ -28,6 +28,8 @@ interface Problem {
   memoryLimit?: string;
 }
 
+type LayoutMode = 'split' | 'code-focus' | 'fullscreen';
+
 export default function ContestPage() {
   const params = useParams();
   const contestId = params.id as string;
@@ -38,7 +40,8 @@ export default function ContestPage() {
   const [selectedProblem, setSelectedProblem] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>('split');
+  const [showProblemViewer, setShowProblemViewer] = useState(true);
 
   useEffect(() => {
     const userData = localStorage.getItem('user');
@@ -63,7 +66,6 @@ export default function ContestPage() {
       const contestData = await response.json();
       setContest(contestData);
 
-      // Fetch problems
       await fetchProblems(contestData.problems);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load contest');
@@ -108,6 +110,20 @@ export default function ContestPage() {
     }
   };
 
+  const toggleLayoutMode = () => {
+    if (layoutMode === 'split') {
+      setLayoutMode('code-focus');
+    } else if (layoutMode === 'code-focus') {
+      setLayoutMode('fullscreen');
+    } else {
+      setLayoutMode('split');
+    }
+  };
+
+  const toggleProblemViewer = () => {
+    setShowProblemViewer(!showProblemViewer);
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-vscode-bg">
@@ -143,122 +159,239 @@ export default function ContestPage() {
     );
   }
 
+  const getLayoutConfig = () => {
+    switch (layoutMode) {
+      case 'split':
+        return {
+          showSidebar: true,
+          showProblemInfo: true,
+          sidebarWidth: 'w-80',
+          problemViewerWidth: showProblemViewer ? 'w-2/5' : 'w-0',
+          editorWidth: showProblemViewer ? 'w-3/5' : 'w-full',
+          containerHeight: 'h-screen',
+          contentHeight: 'calc(100vh - 140px)', // Navbar (64px) + Contest Header (76px)
+        };
+      case 'code-focus':
+        return {
+          showSidebar: true,
+          showProblemInfo: true,
+          sidebarWidth: 'w-80',
+          problemViewerWidth: showProblemViewer ? 'w-1/4' : 'w-0',
+          editorWidth: showProblemViewer ? 'w-3/4' : 'w-full',
+          containerHeight: 'h-screen',
+          contentHeight: 'calc(100vh - 140px)',
+        };
+      case 'fullscreen':
+        return {
+          showSidebar: false,
+          showProblemInfo: false,
+          sidebarWidth: 'w-0',
+          problemViewerWidth: 'w-0',
+          editorWidth: 'w-full',
+          containerHeight: 'h-screen',
+          contentHeight: 'calc(100vh - 64px)', // Only Navbar
+        };
+    }
+  };
+
+  const layout = getLayoutConfig();
+
   return (
-    <div className="h-screen bg-vscode-bg flex flex-col overflow-hidden">
-      {/* Pinned Navbar */}
-      <div className="sticky top-0 z-50">
+    <div className={`${layout.containerHeight} bg-vscode-bg flex flex-col overflow-hidden relative`}>
+      {/* Fixed Navbar Layer - Z-Index 100 */}
+      <div className="fixed top-0 left-0 right-0 z-[100] bg-vscode-bg border-b border-vscode-line">
         <Navbar user={user} />
-        <ContestHeader contest={contest} />
+        {layout.showProblemInfo && (
+          <div className="border-t border-vscode-line">
+            <ContestHeader contest={contest} />
+          </div>
+        )}
       </div>
       
-      {/* Main Contest Layout */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Pinned Left Sidebar - Problem Navigator */}
-        <div className="w-80 bg-vscode-sidebar border-r border-vscode-line flex-shrink-0 sticky top-0 h-full overflow-y-auto">
-          <ProblemNavigator 
-            problems={problems}
-            selectedProblem={selectedProblem}
-            onProblemSelectAction={setSelectedProblem}
-          />
+      {/* Main Content Layer - Z-Index 10 */}
+      <div 
+        className="flex overflow-hidden relative z-10"
+        style={{ 
+          height: layout.contentHeight,
+          marginTop: layout.showProblemInfo ? '140px' : '64px'
+        }}
+      >
+        {/* Left Sidebar - Fixed Width with Smooth Transitions */}
+        <div 
+          className={`${layout.sidebarWidth} bg-vscode-sidebar border-r border-vscode-line flex-shrink-0 transition-all duration-300 ease-in-out overflow-hidden relative z-20`}
+          style={{ 
+            transform: layout.showSidebar ? 'translateX(0)' : 'translateX(-100%)',
+            opacity: layout.showSidebar ? 1 : 0
+          }}
+        >
+          <div className="w-80 h-full overflow-y-auto">
+            <ProblemNavigator 
+              problems={problems}
+              selectedProblem={selectedProblem}
+              onProblemSelectAction={setSelectedProblem}
+            />
+          </div>
         </div>
 
-        {/* Main Content Area */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Pinned Problem Info Bar */}
-          <div className="bg-vscode-sidebar border-b-2 border-vscode-line px-6 py-4 flex items-center justify-between sticky top-0 z-40">
-            <div className="flex items-center space-x-6">
-              {problems[selectedProblem] && (
-                <>
-                  <div className="flex items-center space-x-3">
-                    <span className="text-2xl font-bold text-vscode-blue bg-vscode-blue/10 px-3 py-1 rounded">
-                      {problems[selectedProblem].index}
-                    </span>
-                    <div>
-                      <h3 className="text-lg font-bold text-vscode-text">
-                        {problems[selectedProblem].name}
-                      </h3>
-                      <div className="flex items-center space-x-4 text-sm">
-                        {problems[selectedProblem].rating && (
-                          <span className="text-vscode-green font-medium">
-                            {problems[selectedProblem].rating}
+        {/* Main Content Area - Flexible Width */}
+        <div className="flex-1 flex flex-col overflow-hidden relative">
+          {/* Enhanced Problem Info Bar with Better Spacing */}
+          {layout.showProblemInfo && (
+            <div className="bg-vscode-sidebar border-b-2 border-vscode-line px-6 py-4 flex items-center justify-between flex-shrink-0 relative z-30 min-h-[80px]">
+              <div className="flex items-center space-x-6 flex-1 min-w-0">
+                {problems[selectedProblem] && (
+                  <>
+                    <div className="flex items-center space-x-3 flex-shrink-0">
+                      <span className="text-2xl font-bold text-vscode-blue bg-vscode-blue/10 px-3 py-1 rounded flex-shrink-0">
+                        {problems[selectedProblem].index}
+                      </span>
+                      <div className="min-w-0">
+                        <h3 className="text-lg font-bold text-vscode-text truncate">
+                          {problems[selectedProblem].name}
+                        </h3>
+                        <div className="flex items-center space-x-4 text-sm">
+                          {problems[selectedProblem].rating && (
+                            <span className="text-vscode-green font-medium flex-shrink-0">
+                              {problems[selectedProblem].rating}
+                            </span>
+                          )}
+                          <span className="text-vscode-comment flex-shrink-0">
+                            Contest {problems[selectedProblem].contestId}
                           </span>
-                        )}
-                        <span className="text-vscode-comment">
-                          Contest {problems[selectedProblem].contestId}
-                        </span>
-                        <span className="text-vscode-comment">
-                          {problems[selectedProblem].timeLimit}
-                        </span>
+                          <span className="text-vscode-comment flex-shrink-0">
+                            {problems[selectedProblem].timeLimit}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  {problems[selectedProblem].tags && problems[selectedProblem].tags.length > 0 && (
-                    <div className="flex flex-wrap gap-2">
-                      {problems[selectedProblem].tags.slice(0, 3).map((tag, index) => (
-                        <span
-                          key={index}
-                          className="bg-vscode-line text-vscode-comment px-2 py-1 rounded text-xs font-medium"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                      {problems[selectedProblem].tags.length > 3 && (
-                        <span className="text-xs text-vscode-comment">
-                          +{problems[selectedProblem].tags.length - 3}
-                        </span>
-                      )}
-                    </div>
+                    {problems[selectedProblem].tags && problems[selectedProblem].tags.length > 0 && (
+                      <div className="flex flex-wrap gap-2 flex-1 min-w-0">
+                        {problems[selectedProblem].tags.slice(0, 3).map((tag, index) => (
+                          <span
+                            key={index}
+                            className="bg-vscode-line text-vscode-comment px-2 py-1 rounded text-xs font-medium flex-shrink-0"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                        {problems[selectedProblem].tags.length > 3 && (
+                          <span className="text-xs text-vscode-comment flex-shrink-0">
+                            +{problems[selectedProblem].tags.length - 3}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <div className="flex items-center space-x-3 flex-shrink-0 ml-6">
+                {/* Layout Control Buttons with Better Spacing */}
+                <div className="flex items-center space-x-1 bg-vscode-bg rounded-lg p-1 border border-vscode-line">
+                  {layoutMode !== 'fullscreen' && (
+                    <button
+                      onClick={toggleProblemViewer}
+                      className={`flex items-center space-x-1 px-3 py-2 rounded text-sm transition-all duration-200 ${
+                        showProblemViewer 
+                          ? 'bg-vscode-blue text-white shadow-sm' 
+                          : 'text-vscode-comment hover:text-vscode-text hover:bg-vscode-line/50'
+                      }`}
+                      title={showProblemViewer ? 'Hide Problem Statement' : 'Show Problem Statement'}
+                    >
+                      {showProblemViewer ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      <span className="hidden sm:inline">Problem</span>
+                    </button>
                   )}
-                </>
+                  
+                  <button
+                    onClick={toggleLayoutMode}
+                    className="flex items-center space-x-1 px-3 py-2 rounded text-sm text-vscode-comment hover:text-vscode-text hover:bg-vscode-line/50 transition-all duration-200"
+                    title={`Switch to ${layoutMode === 'split' ? 'Code Focus' : layoutMode === 'code-focus' ? 'Fullscreen' : 'Split View'} Mode`}
+                  >
+                    {layoutMode === 'split' && <Layout className="h-4 w-4" />}
+                    {layoutMode === 'code-focus' && <Code2 className="h-4 w-4" />}
+                    {layoutMode === 'fullscreen' && <Monitor className="h-4 w-4" />}
+                    <span className="hidden sm:inline">
+                      {layoutMode === 'split' && 'Split'}
+                      {layoutMode === 'code-focus' && 'Focus'}
+                      {layoutMode === 'fullscreen' && 'Full'}
+                    </span>
+                  </button>
+                </div>
+
+                <a
+                  href={problems[selectedProblem]?.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center space-x-2 bg-vscode-blue text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors font-medium flex-shrink-0"
+                >
+                  <span>Codeforces</span>
+                </a>
+              </div>
+            </div>
+          )}
+
+          {/* Content Area with Perfect Boundaries */}
+          <div className="flex-1 flex overflow-hidden relative">
+            {/* Problem Viewer - Animated with Proper Boundaries */}
+            <div 
+              className={`${layout.problemViewerWidth} transition-all duration-300 ease-in-out overflow-hidden border-r border-vscode-line flex-shrink-0 relative`}
+              style={{ 
+                opacity: showProblemViewer && layoutMode !== 'fullscreen' ? 1 : 0,
+                transform: showProblemViewer && layoutMode !== 'fullscreen' ? 'translateX(0)' : 'translateX(-20px)',
+                visibility: showProblemViewer && layoutMode !== 'fullscreen' ? 'visible' : 'hidden'
+              }}
+            >
+              {showProblemViewer && layoutMode !== 'fullscreen' && (
+                <div className="w-full h-full overflow-hidden">
+                  <ProblemViewer 
+                    problem={problems[selectedProblem]}
+                    contestId={contestId}
+                  />
+                </div>
               )}
             </div>
 
-            <div className="flex items-center space-x-3">
-              <a
-                href={problems[selectedProblem]?.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center space-x-2 bg-vscode-blue text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors font-medium"
-              >
-                <span>Codeforces</span>
-              </a>
-              
-              <button
-                onClick={() => setIsFullscreen(!isFullscreen)}
-                className="flex items-center space-x-2 bg-vscode-green text-black px-4 py-2 rounded-lg hover:bg-green-400 transition-colors font-medium"
-                title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
-              >
-                {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-                <span>{isFullscreen ? 'Exit' : 'Fullscreen'}</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Content Area */}
-          <div className="flex-1 flex overflow-hidden">
-            {/* Problem Viewer - Only show when not in fullscreen */}
-            {!isFullscreen && (
-              <div className="w-2/5 border-r border-vscode-line overflow-y-auto bg-vscode-editor">
-                <ProblemViewer 
-                  problem={problems[selectedProblem]}
-                  contestId={contestId}
-                />
-              </div>
-            )}
-
-            {/* Code Editor Area */}
-            <div className={`${isFullscreen ? 'w-full' : 'w-3/5'} flex overflow-hidden`}>
+            {/* Code Editor Area - Maintains Perfect Boundaries */}
+            <div className={`${layout.editorWidth} transition-all duration-300 ease-in-out flex overflow-hidden flex-shrink-0`}>
               <CodeEditor 
                 problemUrl={problems[selectedProblem]?.url}
                 contestId={contestId}
                 userId={user?.id}
-                isFullscreen={isFullscreen}
+                layoutMode={layoutMode}
+                showProblemViewer={showProblemViewer}
               />
             </div>
           </div>
         </div>
       </div>
+
+      {/* Floating Controls for Fullscreen Mode - Z-Index 200 */}
+      {layoutMode === 'fullscreen' && (
+        <div className="fixed top-4 right-4 z-[200]">
+          <div className="flex items-center space-x-2 bg-vscode-sidebar/95 backdrop-blur-md rounded-lg p-3 border border-vscode-line shadow-2xl">
+            <button
+              onClick={toggleLayoutMode}
+              className="flex items-center space-x-2 px-4 py-2 rounded text-sm text-vscode-text hover:bg-vscode-line/50 transition-all duration-200"
+              title="Exit Fullscreen"
+            >
+              <Minimize2 className="h-4 w-4" />
+              <span>Exit Fullscreen</span>
+            </button>
+            {problems[selectedProblem] && (
+              <a
+                href={problems[selectedProblem].url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center space-x-2 bg-vscode-blue text-white px-4 py-2 rounded hover:bg-blue-600 transition-colors text-sm"
+              >
+                <span>Codeforces</span>
+              </a>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
